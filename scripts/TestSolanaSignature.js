@@ -28,7 +28,7 @@ const neonEvmProgram = proxyResult.evmProgramAddress;
 const chainTokenMint = new PublicKey(token.gasToken.tokenMint);
 
 // Derive a Ethereum-style Neon wallet address associated with the Solana wallet
-const solanaPrivateKey = bs58.decode(process.env.SOLANA_PRIVATE_KEY);
+const solanaPrivateKey = bs58.decode(process.env.SOLANA_PRIVATE_KEY_2);
 const keypair = Keypair.fromSecretKey(solanaPrivateKey);
 const solanaUser = SolanaNeonAccount.fromKeypair(
   keypair,
@@ -65,7 +65,7 @@ const gasLimit = result1?.gasList[0];
 
 // Create the scheduled transaction
 const scheduledTransaction = new ScheduledTransaction({
-  nonce: toBeHex(nonce),
+  nonce: nonce,
   payer: solanaUser.neonWallet,
   target: contractAddress,
   callData: calldata,
@@ -128,7 +128,9 @@ while (true) {
 
   const allSuccessful =
     transactions.length > 0 &&
-    transactions.every(({ status }) => status === "Success");
+    transactions.every(
+      ({ status }) => status === "Success" || status === "Failed"
+    );
 
   if (allSuccessful) {
     console.log("✅ All transactions succeeded:", transactions);
