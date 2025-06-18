@@ -1,132 +1,87 @@
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 const {
-  SolanaNeonAccount,
+  NeonProxyRpcApi,
   createBalanceAccountInstruction,
-  createScheduledNeonEvmTransaction,
-  getGasToken,
-  getProxyState,
-  ScheduledTransaction,
   solanaAirdrop,
   delay,
 } = require("@neonevm/solana-sign");
-const { Connection, Keypair, PublicKey } = require("@solana/web3.js");
+const { Connection, Keypair } = require("@solana/web3.js");
 const bs58 = require("bs58").default;
-const { JsonRpcProvider, toBeHex } = require("ethers");
 require("dotenv").config();
 
 async function main() {
-  const proxyResult = await getProxyState("https://devnet.neonevm.org/SOL");
-  const provider = new JsonRpcProvider("https://devnet.neonevm.org/SOL");
   const connection = new Connection(
     "https://api.devnet.solana.com",
     "confirmed"
   );
-  const response = await provider.getNetwork();
-  const chainId = Number(response.chainId);
-  console.log("\nChain ID:", chainId);
+  const proxyApi = new NeonProxyRpcApi("https://devnet.neonevm.org/sol");
 
-  const token = getGasToken(proxyResult.tokensList, chainId);
-  const neonProxyRpcApi = proxyResult.proxyApi;
-  const neonEvmProgram = proxyResult.evmProgramAddress;
-  const chainTokenMint = new PublicKey(token.gasToken.tokenMint);
-
-  // Derive a Ethereum-style Neon wallet address associated with the Solana wallet
   const solanaPrivateKey = bs58.decode(process.env.SOLANA_PRIVATE_KEY);
   const keypair = Keypair.fromSecretKey(solanaPrivateKey);
-  const solanaUser = SolanaNeonAccount.fromKeypair(
-    keypair,
-    neonEvmProgram,
-    chainTokenMint,
-    chainId
-  );
+  const { chainId, solanaUser, provider, programAddress, tokenMintAddress } =
+    await proxyApi.init(keypair);
   await solanaAirdrop(connection, solanaUser.publicKey, 1e9);
 
   const nonce = Number(
-    await neonProxyRpcApi.getTransactionCount(solanaUser.neonWallet)
+    await proxyApi.getTransactionCount(solanaUser.neonWallet)
   );
-  console.log("\nNonce:", nonce);
 
   const contractAddress = "0x11adc2d986e334137b9ad0a0f290771f31e9517f"; // Replace with the contract address
   const calldata =
     "0x095ea7b300000000000000000000000058631A7B7805781A8A0aF44AEd86AD28BA1722f6000000000000000000000000000000000000000000000000000000003b9aca00";
 
-  // Estimate gas for the transaction intended to get executed
-  const { result: result1 } = await neonProxyRpcApi.estimateScheduledGas({
-    scheduledSolanaPayer: solanaUser.publicKey.toBase58(),
-    transactions: [
-      {
-        from: solanaUser.neonWallet,
-        to: contractAddress,
-        data: calldata,
-      },
-    ],
-  });
+  const transactionData = {
+    from: solanaUser.neonWallet,
+    to: contractAddress,
+    data: calldata,
+  };
 
-  const maxFeePerGas = result1?.maxFeePerGas;
-  const maxPriorityFeePerGas = result1?.maxPriorityFeePerGas;
-  const gasLimit = result1?.gasList[0];
-
-  // Create the scheduled transaction
-  const scheduledTransaction = new ScheduledTransaction({
-    nonce: nonce,
-    payer: solanaUser.neonWallet,
-    target: contractAddress,
-    callData: calldata,
-    maxFeePerGas: maxFeePerGas,
-    maxPriorityFeePerGas: maxPriorityFeePerGas,
-    gasLimit: Number(gasLimit),
-    chainId: chainId,
+  const transactionGas = await proxyApi.estimateScheduledTransactionGas({
+    solanaPayer: solanaUser.publicKey,
+    transactions: [transactionData],
   });
-  console.log("\nScheduled transaction:", scheduledTransaction);
+  console.log("Transaction Gas:", transactionGas);
 
-  // Create the scheduled Neon EVM transaction
-  const transaction = createScheduledNeonEvmTransaction({
-    chainId,
-    signerAddress: solanaUser.publicKey,
-    tokenMintAddress: solanaUser.tokenMint,
-    neonEvmProgram,
-    neonWallet: solanaUser.neonWallet,
-    neonWalletNonce: nonce,
-    neonTransaction: scheduledTransaction.serialize(),
+  const { scheduledTransaction } = await proxyApi.createScheduledTransaction({
+    transactionGas,
+    transactionData,
+    nonce,
   });
-  console.log("\nScheduled Neon EVM transaction:", transaction);
 
   // Creates a balance program account for the Neon wallet if doesn't exist
   const account = await connection.getAccountInfo(solanaUser.balanceAddress);
+
   if (account === null) {
-    transaction.instructions.unshift(
+    const { neonEvmProgram, publicKey, neonWallet, chainId } = solanaUser;
+    scheduledTransaction.instructions.unshift(
       createBalanceAccountInstruction(
         neonEvmProgram,
-        solanaUser.publicKey,
-        solanaUser.neonWallet,
-        solanaUser.chainId
+        publicKey,
+        neonWallet,
+        chainId
       )
     );
   }
 
-  // Get the recent Solana blockhash
   const { blockhash, lastValidBlockHeight } =
     await connection.getLatestBlockhash();
-  console.log("\nBlockhash:", blockhash);
-  transaction.recentBlockhash = blockhash;
-
-  // Sign and send the raw Solana transaction
-  transaction.sign({
+  scheduledTransaction.recentBlockhash = blockhash;
+  scheduledTransaction.sign({
     publicKey: solanaUser.publicKey,
     secretKey: solanaUser.keypair.secretKey,
   });
   const signature = await connection.sendRawTransaction(
-    transaction.serialize()
+    scheduledTransaction.serialize()
   );
-  console.log("\nTransaction signature:", signature);
+  console.log("Transaction signature", signature);
 
   // Gets the transaction execution tree and logs out the successful transactions
   let transactions = [];
   let attempts = 0;
 
   while (true) {
-    transactions = await neonProxyRpcApi.waitTransactionTreeExecution(
+    transactions = await proxyApi.waitTransactionTreeExecution(
       solanaUser.neonWallet,
       nonce,
       7000 // wait 7 seconds max per poll
@@ -156,7 +111,7 @@ async function main() {
     let attempts = 0;
 
     while (result === null) {
-      const res = await neonProxyRpcApi.getTransactionReceipt(transactionHash);
+      const res = await proxyApi.getTransactionReceipt(transactionHash);
       result = res?.result ?? null;
 
       if (result !== null) {

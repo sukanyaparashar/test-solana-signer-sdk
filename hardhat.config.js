@@ -6,16 +6,19 @@ module.exports = {
   solidity: {
     compilers: [
       {
-        version: "0.8.0",
+        version: "0.4.26",
         settings: {
           viaIR: true,
           optimizer: {
             enabled: true,
-            runs: 10000,
+            runs: 200,
           },
         },
       },
     ],
+  },
+  paths: {
+    sources: "./contracts/wneon-only", // <-- Point to a folder with only WNEON.sol
   },
   etherscan: {
     apiKey: {
